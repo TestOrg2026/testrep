@@ -1,0 +1,97 @@
+name: GitHub Issues → OpenObserve
+
+on:
+  issues:
+    types: [opened, closed]
+  issue_comment:
+    types: [created]
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check issue creator association
+        id: creator_filter
+        run: |
+          CREATOR_ASSOC="${{ github.event.issue.author_association }}"
+
+          if [[ "$CREATOR_ASSOC" == "OWNER" || "$CREATOR_ASSOC" == "MEMBER" ]]; then
+            echo "track=false" >> $GITHUB_OUTPUT
+          else
+            echo "track=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop if issue created by core team
+        if: steps.creator_filter.outputs.track == 'false'
+        run: echo "Issue created by core team. Skipping."
+
+      - name: Build payload
+        if: steps.creator_filter.outputs.track == 'true'
+        run: |
+          EVENT_NAME="${{ github.event_name }}"
+          ACTION="${{ github.event.action }}"
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          ISSUE_ID="${{ github.event.issue.id }}"
+          REPO="${{ github.repository }}"
+
+          ISSUE_CREATOR="${{ github.event.issue.user.login }}"
+          ISSUE_CREATOR_ASSOC="${{ github.event.issue.author_association }}"
+          ISSUE_CREATED_AT="${{ github.event.issue.created_at }}"
+          ISSUE_CLOSED_AT="${{ github.event.issue.closed_at }}"
+
+          if [[ "$EVENT_NAME" == "issues" && "$ACTION" == "opened" ]]; then
+            EVENT_TYPE="issue_opened"
+            ACTOR="$ISSUE_CREATOR"
+            ACTOR_ASSOC="$ISSUE_CREATOR_ASSOC"
+            EVENT_TIME="$ISSUE_CREATED_AT"
+
+          elif [[ "$EVENT_NAME" == "issues" && "$ACTION" == "closed" ]]; then
+            EVENT_TYPE="issue_closed"
+            ACTOR="${{ github.actor }}"
+            ACTOR_ASSOC="${{ github.event.sender.author_association }}"
+            EVENT_TIME="$ISSUE_CLOSED_AT"
+
+          elif [[ "$EVENT_NAME" == "issue_comment" ]]; then
+            EVENT_TYPE="comment_created"
+            ACTOR="${{ github.event.comment.user.login }}"
+            ACTOR_ASSOC="${{ github.event.comment.author_association }}"
+            EVENT_TIME="${{ github.event.comment.created_at }}"
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg event_type "$EVENT_TYPE" \
+            --arg repo "$REPO" \
+            --argjson issue_number "$ISSUE_NUMBER" \
+            --arg issue_id "$ISSUE_ID" \
+            --arg issue_creator "$ISSUE_CREATOR" \
+            --arg issue_creator_association "$ISSUE_CREATOR_ASSOC" \
+            --arg actor "$ACTOR" \
+            --arg actor_association "$ACTOR_ASSOC" \
+            --arg issue_created_at "$ISSUE_CREATED_AT" \
+            --arg issue_closed_at "$ISSUE_CLOSED_AT" \
+            --arg event_time "$EVENT_TIME" \
+            '{
+              event_type: $event_type,
+              repo: $repo,
+              issue_number: $issue_number,
+              issue_id: $issue_id,
+              issue_creator: $issue_creator,
+              issue_creator_association: $issue_creator_association,
+              event_actor: $actor,
+              event_actor_association: $actor_association,
+              issue_created_at: $issue_created_at,
+              issue_closed_at: $issue_closed_at,
+              event_time: $event_time
+            }')
+
+          echo "$PAYLOAD" > payload.json
+
+      - name: Send to OpenObserve
+        if: steps.creator_filter.outputs.track == 'true'
+        run: |
+          curl -X POST "${{ secrets.OO_INGEST_URL }}" \
+            -H "Authorization: Basic ${{ secrets.OO_AUTH }}" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
