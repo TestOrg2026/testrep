@@ -11,23 +11,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check issue creator association
-        id: creator_filter
+      - name: Determine if issue creator is core team
+        id: core_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CREATOR_ASSOC="${{ github.event.issue.author_association }}"
+          CREATOR="${{ github.event.issue.user.login }}"
+          ORG="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
 
-          if [[ "$CREATOR_ASSOC" == "OWNER" || "$CREATOR_ASSOC" == "MEMBER" ]]; then
-            echo "track=false" >> $GITHUB_OUTPUT
-          else
-            echo "track=true" >> $GITHUB_OUTPUT
+          IS_CORE=false
+
+          # Check org membership
+          ORG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/orgs/$ORG/members/$CREATOR)
+
+          if [[ "$ORG_STATUS" == "204" ]]; then
+            IS_CORE=true
           fi
 
+          # Check repo collaborator
+          REPO_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/$ORG/$REPO/collaborators/$CREATOR)
+
+          if [[ "$REPO_STATUS" == "204" ]]; then
+            IS_CORE=true
+          fi
+
+          echo "track=$([[ "$IS_CORE" == "true" ]] && echo false || echo true)" >> $GITHUB_OUTPUT
+
       - name: Stop if issue created by core team
-        if: steps.creator_filter.outputs.track == 'false'
+        if: steps.core_check.outputs.track == 'false'
         run: echo "Issue created by core team. Skipping."
 
       - name: Build payload
-        if: steps.creator_filter.outputs.track == 'true'
+        if: steps.core_check.outputs.track == 'true'
         run: |
           EVENT_NAME="${{ github.event_name }}"
           ACTION="${{ github.event.action }}"
@@ -37,38 +57,32 @@ jobs:
           REPO="${{ github.repository }}"
 
           ISSUE_CREATOR="${{ github.event.issue.user.login }}"
-          ISSUE_CREATOR_ASSOC="${{ github.event.issue.author_association }}"
           ISSUE_CREATED_AT="${{ github.event.issue.created_at }}"
           ISSUE_CLOSED_AT="${{ github.event.issue.closed_at }}"
 
           if [[ "$EVENT_NAME" == "issues" && "$ACTION" == "opened" ]]; then
             EVENT_TYPE="issue_opened"
             ACTOR="$ISSUE_CREATOR"
-            ACTOR_ASSOC="$ISSUE_CREATOR_ASSOC"
             EVENT_TIME="$ISSUE_CREATED_AT"
 
           elif [[ "$EVENT_NAME" == "issues" && "$ACTION" == "closed" ]]; then
             EVENT_TYPE="issue_closed"
             ACTOR="${{ github.actor }}"
-            ACTOR_ASSOC="${{ github.event.sender.author_association }}"
             EVENT_TIME="$ISSUE_CLOSED_AT"
 
-          elif [[ "$EVENT_NAME" == "issue_comment" ]]; then
+          else
             EVENT_TYPE="comment_created"
             ACTOR="${{ github.event.comment.user.login }}"
-            ACTOR_ASSOC="${{ github.event.comment.author_association }}"
             EVENT_TIME="${{ github.event.comment.created_at }}"
           fi
 
-          PAYLOAD=$(jq -n \
+          jq -n \
             --arg event_type "$EVENT_TYPE" \
             --arg repo "$REPO" \
             --argjson issue_number "$ISSUE_NUMBER" \
             --arg issue_id "$ISSUE_ID" \
             --arg issue_creator "$ISSUE_CREATOR" \
-            --arg issue_creator_association "$ISSUE_CREATOR_ASSOC" \
-            --arg actor "$ACTOR" \
-            --arg actor_association "$ACTOR_ASSOC" \
+            --arg event_actor "$ACTOR" \
             --arg issue_created_at "$ISSUE_CREATED_AT" \
             --arg issue_closed_at "$ISSUE_CLOSED_AT" \
             --arg event_time "$EVENT_TIME" \
@@ -78,18 +92,14 @@ jobs:
               issue_number: $issue_number,
               issue_id: $issue_id,
               issue_creator: $issue_creator,
-              issue_creator_association: $issue_creator_association,
-              event_actor: $actor,
-              event_actor_association: $actor_association,
+              event_actor: $event_actor,
               issue_created_at: $issue_created_at,
               issue_closed_at: $issue_closed_at,
               event_time: $event_time
-            }')
-
-          echo "$PAYLOAD" > payload.json
+            }' > payload.json
 
       - name: Send to OpenObserve
-        if: steps.creator_filter.outputs.track == 'true'
+        if: steps.core_check.outputs.track == 'true'
         run: |
           curl -X POST "${{ secrets.OO_INGEST_URL }}" \
             -H "Authorization: Basic ${{ secrets.OO_AUTH }}" \
