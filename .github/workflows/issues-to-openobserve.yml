@@ -11,36 +11,50 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Determine if issue creator is core team
-        id: core_check
+      - name: Determine roles of issue creator and actor
+        id: role_check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          determine_role() {
+            USER=$1
+            ROLE="external" # Default to external
+
+            # Check org membership
+            ORG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/orgs/$ORG/members/$USER)
+
+            if [[ "$ORG_STATUS" == "204" ]]; then
+              ROLE="member"
+            fi
+
+            # Check if user is repo owner
+            if [[ "$USER" == "$ORG" ]]; then
+              ROLE="owner"
+            fi
+
+            echo "$ROLE"
+          }
+
           CREATOR="${{ github.event.issue.user.login }}"
+          ACTOR="${{ github.actor }}"
           ORG="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
 
-          IS_CORE=false
+          CREATOR_ROLE=$(determine_role "$CREATOR")
+          ACTOR_ROLE=$(determine_role "$ACTOR")
 
-          # Check org membership
-          ORG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/orgs/$ORG/members/$CREATOR)
+          echo "creator_role=$CREATOR_ROLE" >> $GITHUB_OUTPUT
+          echo "actor_role=$ACTOR_ROLE" >> $GITHUB_OUTPUT
 
-          if [[ "$ORG_STATUS" == "204" ]]; then
-            IS_CORE=true
-          fi
-
-          # Check repo collaborator
-          REPO_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/$ORG/$REPO/collaborators/$CREATOR)
-
-          if [[ "$REPO_STATUS" == "204" ]]; then
-            IS_CORE=true
-          fi
-
-          echo "track=$([[ "$IS_CORE" == "true" ]] && echo false || echo true)" >> $GITHUB_OUTPUT
+      - name: Determine if issue creator is external
+        id: core_check
+        run: |
+          if [[ "${{ steps.role_check.outputs.creator_role }}" != "external" ]]; then
+            echo "track=false" >> $GITHUB_OUTPUT
+          else
+            echo "track=true" >> $GITHUB_OUTPUT
 
       - name: Stop if issue created by core team
         if: steps.core_check.outputs.track == 'false'
@@ -59,6 +73,9 @@ jobs:
           ISSUE_CREATOR="${{ github.event.issue.user.login }}"
           ISSUE_CREATED_AT="${{ github.event.issue.created_at }}"
           ISSUE_CLOSED_AT="${{ github.event.issue.closed_at }}"
+
+          CREATOR_ROLE="${{ steps.role_check.outputs.creator_role }}"
+          ACTOR_ROLE="${{ steps.role_check.outputs.actor_role }}"
 
           if [[ "$EVENT_NAME" == "issues" && "$ACTION" == "opened" ]]; then
             EVENT_TYPE="issue_opened"
@@ -82,7 +99,9 @@ jobs:
             --argjson issue_number "$ISSUE_NUMBER" \
             --arg issue_id "$ISSUE_ID" \
             --arg issue_creator "$ISSUE_CREATOR" \
+            --arg creator_role "$CREATOR_ROLE" \
             --arg event_actor "$ACTOR" \
+            --arg actor_role "$ACTOR_ROLE" \
             --arg issue_created_at "$ISSUE_CREATED_AT" \
             --arg issue_closed_at "$ISSUE_CLOSED_AT" \
             --arg event_time "$EVENT_TIME" \
@@ -92,7 +111,9 @@ jobs:
               issue_number: $issue_number,
               issue_id: $issue_id,
               issue_creator: $issue_creator,
+              creator_role: $creator_role,
               event_actor: $event_actor,
+              actor_role: $actor_role,
               issue_created_at: $issue_created_at,
               issue_closed_at: $issue_closed_at,
               event_time: $event_time
