@@ -17,8 +17,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           determine_role() {
-            USER=$1
-            ROLE="external" # Default to external
+            USER="$1"
+            ROLE="external"
 
             # Check org membership
             ORG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -27,20 +27,27 @@ jobs:
 
             if [[ "$ORG_STATUS" == "204" ]]; then
               ROLE="member"
+              echo "$ROLE"
+              return
             fi
 
-            # Check if user is repo owner
-            if [[ "$USER" == "$ORG" ]]; then
-              ROLE="owner"
+            # Check repo collaborator
+            REPO_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/$ORG/$REPO/collaborators/$USER)
+
+            if [[ "$REPO_STATUS" == "204" ]]; then
+              ROLE="collaborator"
             fi
 
             echo "$ROLE"
           }
 
-          CREATOR="${{ github.event.issue.user.login }}"
-          ACTOR="${{ github.actor }}"
           ORG="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
+
+          CREATOR="${{ github.event.issue.user.login }}"
+          ACTOR="${{ github.actor }}"
 
           CREATOR_ROLE=$(determine_role "$CREATOR")
           ACTOR_ROLE=$(determine_role "$ACTOR")
@@ -51,10 +58,11 @@ jobs:
       - name: Determine if issue creator is external
         id: core_check
         run: |
-          if [[ "${{ steps.role_check.outputs.creator_role }}" != "external" ]]; then
-            echo "track=false" >> $GITHUB_OUTPUT
-          else
+          if [[ "${{ steps.role_check.outputs.creator_role }}" == "external" ]]; then
             echo "track=true" >> $GITHUB_OUTPUT
+          else
+            echo "track=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Stop if issue created by core team
         if: steps.core_check.outputs.track == 'false'
