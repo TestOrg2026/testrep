@@ -55,21 +55,7 @@ jobs:
           echo "creator_role=$CREATOR_ROLE" >> $GITHUB_OUTPUT
           echo "actor_role=$ACTOR_ROLE" >> $GITHUB_OUTPUT
 
-      - name: Determine if issue creator is external
-        id: core_check
-        run: |
-          if [[ "${{ steps.role_check.outputs.creator_role }}" == "external" ]]; then
-            echo "track=true" >> $GITHUB_OUTPUT
-          else
-            echo "track=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Stop if issue created by core team
-        if: steps.core_check.outputs.track == 'false'
-        run: echo "Issue created by core team. Skipping."
-
       - name: Build payload
-        if: steps.core_check.outputs.track == 'true'
         run: |
           EVENT_NAME="${{ github.event_name }}"
           ACTION="${{ github.event.action }}"
@@ -128,7 +114,6 @@ jobs:
             }' > payload.json
 
       - name: Send to OpenObserve
-        if: steps.core_check.outputs.track == 'true'
         run: |
           curl -X POST "${{ secrets.OO_INGEST_URL }}" \
             -H "Authorization: Basic ${{ secrets.OO_AUTH }}" \
